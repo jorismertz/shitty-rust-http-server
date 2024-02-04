@@ -1,17 +1,15 @@
 use http_server::ThreadPool;
 use serde::{Deserialize, Serialize};
 mod res;
-pub use crate::res::response;
+pub use crate::res::http;
 
 use chrono::{DateTime, Utc};
-use std::str::FromStr;
 
-pub use std::{
-    error::Error,
-    fmt::{format, write, Display},
+use std::{
     fs,
     io::{prelude::*, BufReader},
     net::{TcpListener, TcpStream},
+    str::FromStr,
 };
 
 fn main() {
@@ -38,48 +36,7 @@ fn main() {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum Method {
-    GET,
-    HEAD,
-    POST,
-    PUT,
-    DELETE,
-    CONNECT,
-    OPTIONS,
-    TRACE,
-    PATCH,
-}
-
-impl FromStr for Method {
-    type Err = ();
-
-    fn from_str(input: &str) -> Result<Method, Self::Err> {
-        match input.to_uppercase().as_str() {
-            "GET" => Ok(Method::GET),
-            "HEAD" => Ok(Method::HEAD),
-            "POST" => Ok(Method::POST),
-            "PUT" => Ok(Method::PUT),
-            "DELETE" => Ok(Method::DELETE),
-            "CONNECT" => Ok(Method::CONNECT),
-            "OPTIONS" => Ok(Method::OPTIONS),
-            "TRACE" => Ok(Method::TRACE),
-            "PATCH" => Ok(Method::PATCH),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Request {
-    method: Method,
-    path: String,
-    protocol_version: String,
-    headers: response::Headers,
-    body: Option<Vec<u8>>,
-}
-
-fn parse_request(mut stream: &mut TcpStream) -> Option<Request> {
+fn parse_request(mut stream: &mut TcpStream) -> Option<http::Request> {
     let mut buf_reader = BufReader::new(&mut stream);
 
     let req: Vec<_> = buf_reader
@@ -98,11 +55,10 @@ fn parse_request(mut stream: &mut TcpStream) -> Option<Request> {
         return None;
     }
 
-    let mut headers: response::Headers = Vec::new();
+    let mut headers: http::Headers = Vec::new();
     for line in req.clone().into_iter().skip(1) {
         let split: Vec<&str> = line.split(": ").collect();
 
-        // I'm just assuming this is how http works...
         if split.len() != 2 {
             continue;
         }
@@ -129,10 +85,10 @@ fn parse_request(mut stream: &mut TcpStream) -> Option<Request> {
         }
     }
 
-    return Some(Request {
+    return Some(http::Request {
         protocol_version: first_line.get(2)?.to_string(),
         path: first_line.get(1)?.to_string(),
-        method: Method::from_str(first_line.get(0)?).unwrap(),
+        method: http::Method::from_str(first_line.get(0)?).unwrap(),
         headers,
         body,
     });
@@ -143,57 +99,83 @@ struct postRouteInput<'a> {
     message: &'a str,
 }
 
-fn handle_route(mut stream: TcpStream, req: &Request) {
+fn handle_route(mut stream: TcpStream, req: &http::Request) {
     let now: DateTime<Utc> = Utc::now();
 
-    let base_headers: response::Headers = vec![
-        response::Header::Date.new(&now.to_rfc2822()),
-        response::Header::CacheControl.new("public, max-age=3600"),
-        response::Header::Server.new("Rust baby"),
+    let base_headers: http::Headers = vec![
+        http::Header::Date.new(&now.to_rfc2822()),
+        http::Header::CacheControl.new("public, max-age=3600"),
+        http::Header::Server.new("github.com/jorismertz/shitty-rust-http-server"),
     ];
 
     match req.path.as_str() {
         "/test" => {
             let mut headers = base_headers;
-            headers.push(response::Header::ContentType.new("text/html;charset=utf-8"));
-            headers.push(response::Header::ContentLength.new("5"));
+            headers.push(http::Header::ContentType.new("text/html;charset=utf-8"));
+            headers.push(http::Header::ContentLength.new("5"));
 
-            let response = response::Message::new(&response::Status::Ok, Some("hello"), &headers);
+            let response = http::Response::new(&http::Status::Ok, Some("hello"), &headers);
 
             stream.write_response(&response);
         }
         "/post" => {
             if let Some(body) = &req.body.to_owned() {
-                let as_string = String::from_utf8_lossy(body).to_string();
-                // dbg!(&as_string);
-                let parsed: postRouteInput = serde_json::from_str(&as_string).unwrap();
-                dbg!(parsed);
+                if let Ok(deserialized) =
+                    serde_json::from_str::<postRouteInput>(&String::from_utf8_lossy(body))
+                {
+                    dbg!(&deserialized);
+
+                    let message = format!("You said {}", deserialized.message);
+                    let response_body: http::ResponseResult<&str, &str> = http::ResponseResult {
+                        ok: true,
+                        result: Ok(&message),
+                    };
+                    let serialized = serde_json::to_string(&response_body).unwrap();
+                    let mut headers = base_headers;
+                    headers.push(http::Header::AccessControlAllowOrigin.new("*"));
+
+                    let response =
+                        http::Response::new(&http::Status::Ok, Some(&serialized), &headers);
+
+                    stream.write_response(&response);
+                    return;
+                }
+
+                let response_body: http::ResponseResult<&str, &str> = http::ResponseResult {
+                    ok: false,
+                    result: Err("That wont work"),
+                };
+                let serialized = serde_json::to_string(&response_body).unwrap();
+                let response =
+                    http::Response::new(&http::Status::Ok, Some(&serialized), &base_headers);
+
+                stream.write_response(&response);
+                return;
             }
 
             let contents = fs::read_to_string("./src/pages/index.html").unwrap();
             stream
-                .write_response_body(&contents, &response::Status::Ok)
+                .write_response_body(&contents, &http::Status::Ok)
                 .unwrap();
         }
         "/" => {
             let contents = fs::read_to_string("./src/pages/index.html").unwrap();
 
             let mut headers = base_headers;
-            headers.push(response::Header::ContentType.new("text/html;charset=utf-8"));
-            headers.push(response::Header::ContentLength.new(&contents.len().to_string()));
+            headers.push(http::Header::ContentType.new("text/html;charset=utf-8"));
+            headers.push(http::Header::ContentLength.new(&contents.len().to_string()));
 
-            let response = response::Message::new(&response::Status::Ok, Some(&contents), &headers);
+            let response = http::Response::new(&http::Status::Ok, Some(&contents), &headers);
 
             stream.write_response(&response);
         }
         _ => {
             let contents = fs::read_to_string("./src/pages/404.html").unwrap();
             let mut headers = base_headers;
-            headers.push(response::Header::ContentType.new("text/html;charset=utf-8"));
-            headers.push(response::Header::ContentLength.new(&contents.len().to_string()));
+            headers.push(http::Header::ContentType.new("text/html;charset=utf-8"));
+            headers.push(http::Header::ContentLength.new(&contents.len().to_string()));
 
-            let response =
-                response::Message::new(&response::Status::NotFound, Some(&contents), &headers);
+            let response = http::Response::new(&http::Status::NotFound, Some(&contents), &headers);
 
             stream.write_response(&response);
         }
@@ -207,12 +189,12 @@ fn handle_connection(mut stream: TcpStream) {
 }
 
 trait HttpResponses {
-    fn write_response_body(&mut self, html: &str, response: &response::Status) -> Result<(), ()>;
-    fn write_response(&mut self, msg: &response::Message);
+    fn write_response_body(&mut self, html: &str, response: &http::Status) -> Result<(), ()>;
+    fn write_response(&mut self, msg: &http::Response);
 }
 
 impl HttpResponses for TcpStream {
-    fn write_response_body(&mut self, body: &str, status: &response::Status) -> Result<(), ()> {
+    fn write_response_body(&mut self, body: &str, status: &http::Status) -> Result<(), ()> {
         let msg = status.response_string();
         let response = format!("{}\r\nContent-Length: {}\r\n\r\n{}", msg, body.len(), body);
         self.write_all(response.as_bytes()).unwrap();
@@ -220,7 +202,7 @@ impl HttpResponses for TcpStream {
         return Ok(());
     }
 
-    fn write_response(&mut self, msg: &response::Message) {
+    fn write_response(&mut self, msg: &http::Response) {
         let response = msg.to_string();
         self.write_all(response.as_bytes()).unwrap();
     }

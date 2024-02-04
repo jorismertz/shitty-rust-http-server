@@ -1,6 +1,8 @@
-pub mod response {
+pub mod http {
     use std::fmt::{format, Display};
     use std::str::FromStr;
+
+    use serde::{Deserialize, Serialize, Serializer};
     #[derive(Debug)]
     pub enum Status {
         Ok,
@@ -11,22 +13,35 @@ pub mod response {
         InternalServerError,
     }
 
+    // This serializer is used to unwrap the value of a Result type.
+    // otherwise it will send back something like { field: { Ok: value } }
+    fn serialize_result_string<T, E, S>(
+        result: &Result<T, E>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        T: Display,
+        E: Display,
+        S: Serializer,
+    {
+        match result {
+            Ok(value) => serializer.serialize_str(&value.to_string()),
+            Err(error) => serializer.serialize_str(&error.to_string()),
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct ResponseResult<T, E>
+    where
+        T: Display,
+        E: Display,
+    {
+        pub ok: bool,
+        #[serde(serialize_with = "serialize_result_string")]
+        pub result: Result<T, E>,
+    }
+
     pub type Headers = Vec<(String, String)>;
-
-    // pub trait HeaderFunctions {
-    //     fn get_header(&self, name: &str) -> Option<(String, String)>;
-    // }
-
-    // impl HeaderFunctions for Headers {
-    //     fn get_header(&self, name: &str) -> Option<(String, String)> {
-    //         for (key, value) in self.into_iter() {
-    //             if key == name {
-    //                 return Some((key.to_string(), value.to_string()));
-    //             }
-    //         }
-    //         return None;
-    //     }
-    // }
 
     impl Status {
         pub fn status_code(&self) -> i32 {
@@ -60,16 +75,21 @@ pub mod response {
         Referer,
         Server,
         Date,
+        AccessControlAllowOrigin,
     }
 
     impl Header {
         pub fn to_str(&self) -> String {
             let mut string = format!("{:?}", self);
-            for (index, char) in string.clone().chars().into_iter().enumerate() {
-                if char.is_uppercase() && index != 0 {
-                    string.insert_str(index, "-");
+            let mut chars: Vec<(usize, char)> = string.char_indices().into_iter().collect();
+            chars.reverse();
+
+            for (index, char) in &chars {
+                if char.is_uppercase() && *index != 0 {
+                    string.insert_str(*index, "-");
                 }
             }
+
             return string;
         }
 
@@ -78,15 +98,19 @@ pub mod response {
         }
     }
 
-    pub struct Message<'a> {
+    pub struct Response<'a> {
         status: &'a Status,
         body: Option<&'a str>,
         headers: &'a Headers,
     }
 
-    impl<'a> Message<'a> {
-        pub fn new(status: &'a Status, body: Option<&'a str>, headers: &'a Headers) -> Message<'a> {
-            return Message {
+    impl<'a> Response<'a> {
+        pub fn new(
+            status: &'a Status,
+            body: Option<&'a str>,
+            headers: &'a Headers,
+        ) -> Response<'a> {
+            return Response {
                 body,
                 headers,
                 status,
@@ -94,7 +118,7 @@ pub mod response {
         }
     }
 
-    impl<'a> ToString for Message<'a> {
+    impl<'a> ToString for Response<'a> {
         fn to_string(&self) -> String {
             let mut response: Vec<String> = Vec::new();
 
@@ -137,5 +161,46 @@ pub mod response {
             write!(f, "{}", as_string.to_uppercase()).expect("it to write yk");
             return Ok(());
         }
+    }
+
+    #[derive(Debug, PartialEq)]
+    pub enum Method {
+        GET,
+        HEAD,
+        POST,
+        PUT,
+        DELETE,
+        CONNECT,
+        OPTIONS,
+        TRACE,
+        PATCH,
+    }
+
+    impl FromStr for Method {
+        type Err = ();
+
+        fn from_str(input: &str) -> Result<Method, Self::Err> {
+            match input.to_uppercase().as_str() {
+                "GET" => Ok(Method::GET),
+                "HEAD" => Ok(Method::HEAD),
+                "POST" => Ok(Method::POST),
+                "PUT" => Ok(Method::PUT),
+                "DELETE" => Ok(Method::DELETE),
+                "CONNECT" => Ok(Method::CONNECT),
+                "OPTIONS" => Ok(Method::OPTIONS),
+                "TRACE" => Ok(Method::TRACE),
+                "PATCH" => Ok(Method::PATCH),
+                _ => Err(()),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Request {
+        pub method: Method,
+        pub path: String,
+        pub protocol_version: String,
+        pub headers: Headers,
+        pub body: Option<Vec<u8>>,
     }
 }
