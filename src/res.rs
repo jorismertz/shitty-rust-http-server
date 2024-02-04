@@ -3,15 +3,6 @@ pub mod http {
     use std::str::FromStr;
 
     use serde::{Deserialize, Serialize, Serializer};
-    #[derive(Debug)]
-    pub enum Status {
-        Ok,
-        Created,
-        Accepted,
-        BadRequest,
-        NotFound,
-        InternalServerError,
-    }
 
     // This serializer is used to unwrap the value of a Result type.
     // otherwise it will send back something like { field: { Ok: value } }
@@ -141,25 +132,29 @@ pub mod http {
         }
     }
 
+    #[derive(Debug)]
+    pub enum Status {
+        Ok,
+        Created,
+        Accepted,
+        BadRequest,
+        NotFound,
+        InternalServerError,
+    }
+
     impl Display for Status {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let as_string = format!("{:?}", self);
+            let mut as_string = format!("{:?}", self);
+            let mut chars: Vec<(usize, char)> = as_string.char_indices().into_iter().collect();
+            chars.reverse();
 
-            let mut result: Vec<char> = Vec::new();
-
-            for (i, char) in as_string.chars().enumerate() {
-                if char.is_uppercase() && i != 0 {
-                    result.push(char::from_str(" ").unwrap());
-                    result.push(char);
-                    continue;
+            for (index, char) in &chars {
+                if char.is_uppercase() {
+                    as_string.insert_str(*index, " ");
                 }
-                result.push(char)
             }
 
-            let as_string: String = result.iter().collect();
-
-            write!(f, "{}", as_string.to_uppercase()).expect("it to write yk");
-            return Ok(());
+            return write!(f, "{}", as_string.to_uppercase());
         }
     }
 
