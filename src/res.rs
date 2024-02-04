@@ -59,6 +59,7 @@ pub mod response {
         Host,
         Referer,
         Server,
+        Date,
     }
 
     impl Header {
