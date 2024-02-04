@@ -2,7 +2,7 @@ use http_server::ThreadPool;
 mod res;
 pub use crate::res::response;
 
-use std::{str::FromStr, thread};
+use std::str::FromStr;
 
 pub use std::{
     error::Error,
@@ -65,7 +65,7 @@ struct Request {
     method: Method,
     path: String,
     protocol_version: String,
-    headers: Vec<(String, String)>,
+    headers: response::Headers,
 }
 
 fn parse_request(req: Vec<String>) -> Option<Request> {
@@ -78,7 +78,7 @@ fn parse_request(req: Vec<String>) -> Option<Request> {
         return None;
     }
 
-    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut headers: response::Headers = Vec::new();
     for line in req.clone().into_iter().skip(1) {
         let split: Vec<&str> = line.split(": ").collect();
 
@@ -91,26 +91,33 @@ fn parse_request(req: Vec<String>) -> Option<Request> {
     }
 
     return Some(Request {
-        method: Method::from_str(first_line.get(0).unwrap()).unwrap(),
-        path: first_line.get(1).unwrap().to_string(),
-        protocol_version: first_line.get(2).unwrap().to_string(),
+        method: Method::from_str(first_line.get(0)?).unwrap(),
+        path: first_line.get(1)?.to_string(),
+        protocol_version: first_line.get(2)?.to_string(),
         headers,
     });
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let buf_reader = BufReader::new(&mut stream);
-    let http_request: Vec<_> = buf_reader
-        .lines()
-        .map(|result| result.unwrap())
-        .take_while(|line| !line.is_empty())
-        .collect();
+fn handle_route(mut stream: TcpStream, req: &Request) {
+    match req.path.as_str() {
+        "/test" => {
+            let headers: response::Headers = vec![
+                response::Header::ContentType.new("text/html;charset=utf-8"),
+                response::Header::ContentLength.new("5"),
+                response::Header::CacheControl.new("public, max-age=3600"),
+                response::Header::Server.new("Rust baby"),
+            ];
 
-    let request = parse_request(http_request).unwrap();
+            let response = response::Message::new(&response::Status::Ok, Some("hello"), &headers);
 
-    dbg!(&request.path);
-
-    match request.path.as_str() {
+            stream.write_response(&response);
+        }
+        "/post" => {
+            let contents = fs::read_to_string("./src/pages/index.html").unwrap();
+            stream
+                .write_response_body(&contents, &response::Status::Ok)
+                .unwrap();
+        }
         "/" => {
             let contents = fs::read_to_string("./src/pages/index.html").unwrap();
             stream
@@ -126,16 +133,81 @@ fn handle_connection(mut stream: TcpStream) {
     }
 }
 
+// fn handle_connection(mut stream: TcpStream) {
+//     let mut buf_reader = BufReader::new(&mut stream);
+
+//     // Read headers
+//     let http_request: Vec<_> = buf_reader
+//         .by_ref()
+//         .lines()
+//         .take_while(|line| line.as_ref().map(|l| !l.is_empty()).unwrap_or(false))
+//         .collect::<Result<Vec<_>, _>>()
+//         .unwrap_or_default();
+
+//     if let Some(request) = parse_request(&http_request) {
+//         // Assuming parse_request can give us the content length
+//         if let Some(content_length) = request.content_length {
+//             let mut body = vec![0; content_length];
+//             buf_reader.read_exact(&mut body).unwrap(); // Read the body
+//             println!("Body: {:?}", String::from_utf8_lossy(&body));
+//         }
+
+//         handle_route(stream, &request);
+//     }
+// }
+
+fn handle_connection(mut stream: TcpStream) {
+    let mut buf_reader = BufReader::new(&mut stream);
+
+    let http_request: Vec<_> = buf_reader
+        .by_ref()
+        .lines()
+        .map(|result| result.unwrap())
+        .take_while(|line| !line.is_empty())
+        .collect();
+
+    if let Some(request) = parse_request(http_request) {
+        if let Some(content_length) = request
+            .headers
+            .clone()
+            .into_iter()
+            .find(|h| h.0.to_lowercase() == "content-length")
+        {
+            let as_usize = content_length.1.parse::<usize>().unwrap();
+            let mut body = vec![0; as_usize];
+
+            match buf_reader.read_exact(&mut body) {
+                Ok(data) => {
+                    dbg!(data);
+                }
+                Err(_) => {
+                    dbg!("No body read");
+                }
+            }
+
+            println!("Body: {:?}", String::from_utf8_lossy(&body));
+        }
+
+        handle_route(stream, &request);
+    }
+}
+
 trait HttpResponses {
     fn write_response_body(&mut self, html: &str, response: &response::Status) -> Result<(), ()>;
+    fn write_response(&mut self, msg: &response::Message);
 }
 
 impl HttpResponses for TcpStream {
-    fn write_response_body(&mut self, html: &str, status: &response::Status) -> Result<(), ()> {
+    fn write_response_body(&mut self, body: &str, status: &response::Status) -> Result<(), ()> {
         let msg = status.response_string();
-        let response = format!("{}\r\nContent-Length: {}\r\n\r\n{}", msg, html.len(), html);
+        let response = format!("{}\r\nContent-Length: {}\r\n\r\n{}", msg, body.len(), body);
         self.write_all(response.as_bytes()).unwrap();
 
         return Ok(());
+    }
+
+    fn write_response(&mut self, msg: &response::Message) {
+        let response = msg.to_string();
+        self.write_all(response.as_bytes()).unwrap();
     }
 }

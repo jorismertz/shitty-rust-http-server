@@ -17,7 +17,7 @@ pub enum Status {
 }
 
 impl Status {
-    fn status_code(&self) -> i32 {
+    pub fn status_code(&self) -> i32 {
         return match self {
             Self::Ok => 200,
             Self::Created => 201,
@@ -27,7 +27,7 @@ impl Status {
             Self::InternalServerError => 500,
         };
     }
-    fn response_string(&self) -> String {
+    pub fn response_string(&self) -> String {
         return format!("HTTP/1.1 {} {}", self.status_code(), self);
     }
 }
@@ -132,4 +132,3 @@ impl Drop for ThreadPool {
         }
     }
 }
-
